@@ -41,7 +41,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     potential, electricfield, rho_b   =   potentialSolver(eps, Ext, rho_e)
     potential          +=   potential_ext
     electricfield      +=   Ext 
-    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu((rho_e+rho_b)[None,...]*electricfield))
+    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e[None,...]*electricfield))
     
     # 4 - hydrodynamic forces
     u                   =   sys.ifftu(uk)
