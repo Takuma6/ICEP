@@ -82,7 +82,7 @@ def makeRhoe(c, ze, phi_dmy):
     return sys.iffta(dmy)
 
 def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
-    nnsole = sys.makeTanOp(phi_dmy)
+    nnsole  = sys.makeTanOp(phi_dmy)
     chargek = sys.ffta(charge)            
     A = sys.fftu(u*charge[None,...])
     B = sys.fftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.ifftu(1j*np.array(sys.grid.K)*chargek[None,...])))
@@ -114,12 +114,12 @@ def solverPoisson(eps, Ext, rho_e):
             self.niter += 1
             if self._disp:
                 print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
-    NN                   = np.prod(eps.shape)
-    A                      = LinearOperator((NN,NN), matvec=mvps)
-    b                      = rhs() - rho_e.reshape(NN)
-    counter           = gmres_counter()
+    NN            = np.prod(eps.shape)
+    A             = LinearOperator((NN,NN), matvec=mvps)
+    b             = rhs() - rho_e.reshape(NN)
+    counter       = gmres_counter()
     pot, exitcode = sp.sparse.linalg.lgmres(A, b, tol=1e-5)#, callback=counter)
-    pot.shape       = eps.shape
+    pot.shape     = eps.shape
     E                      = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
     def bound_charge_solver(E_total, epsilon0):
         dmy = E_total.copy()
@@ -166,22 +166,23 @@ def saveh5(i, output, u, phi, position, rotation, velocity, omega, force, torque
 # set parameters
 print("SPM simulatin starts!", flush=True)
 # system 
-Np = 6
-sys     = spm.SPM2D({'grid':{'powers':[Np,Np], 'dx':0.5},\
-                     'particle':{'a':10, 'a_xi':4, 'mass_ratio':1.2},\
-                     'fluid':{'rho':1.0, 'mu':1.0}})
-dt = 1 / (sys.fluid.nu*sys.grid.maxK2())
-phihL   = utils.etdPhi(-sys.fluid.nu*sys.grid.K2*dt)
-phir = (lambda x : utils.phiGauss(x, sys.particle.radius, sys.particle.xi, sys.grid.dx))
+Np   = 6
+sys  = spm.SPM2D({'grid':{'powers':[Np,Np], 'dx':0.5},\
+                  'particle':{'a':10, 'a_xi':4, 'mass_ratio':1.2},\
+                  'fluid':{'rho':1.0, 'mu':1.0}})
+dt        = 1 / (sys.fluid.nu*sys.grid.maxK2())
+phihL     = utils.etdPhi(-sys.fluid.nu*sys.grid.K2*dt)
+phir      = (lambda x : utils.phiGauss(x, sys.particle.radius, sys.particle.xi, sys.grid.dx))
 phi_sine  = (lambda x : utils.phiSine(x, sys.particle.radius, sys.particle.xi))
 
 # electro-property
-ze = np.array([1,-1])[...,None]
-gamma = np.ones(2)[...,None]
-kbT = 1
-species = 2
+ze       = np.array([1,-1])[...,None]
+gamma    = np.ones(2)[...,None]
+kbT      = 1
+species  = 2
 epsilon0 = 1
-em = {'epsilon':{'head':100, 'tail':10, 'fluid':1}, 'sigma':{'head':0, 'tail':0, 'fluid':0}}
+em       = {'epsilon':{'head':100, 'tail':10, 'fluid':1}, \
+			'sigma':{'head':0, 'tail':0, 'fluid':0}}
 
 # particle property
 R     = np.ones((1,2))*sys.grid.length/2
@@ -201,17 +202,17 @@ E                  =   Ext.copy()
 potential          =   potential_ext.copy()     
 
 nframes = 1
-ngts = 1
+ngts    = 1
 output_file = "output.hdf5"
-outfh = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, np.zeros_like(rho_e), potential, E, dt*100)
+outfh       = h5py.File(output_file, 'w')
+saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, np.zeros_like(rho_e), potential, E, dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)
     for gts in range(ngts):
         phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b \
             = solver(phi, uk, R, Q, V, O, charge, E, phir, solverNS, solverParticlePos, solverParticleVel, solverPoisson)
-    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, dt*100)
+    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, dt*ngts)
     outfh.flush()
 
 outfh.flush()
