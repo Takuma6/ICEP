@@ -73,6 +73,8 @@ class Grid2D(Grid):
         return 0.5*(vx + np.roll(vx,1,axis=0))
     def y2scalar(self, vy):
         return 0.5*(vy + np.roll(vy,1,axis=1))
+    def xyzScalar(self, v):
+        return self.x2scalar(v[0]), self.y2scalar(v[1])
 
 class Grid3D(Grid):
     dim = 3
@@ -86,6 +88,14 @@ class Grid3D(Grid):
         Pxz = -iK2*self.K[0]*self.K[2]
         Pyz = -iK2*self.K[1]*self.K[2]
         return np.stack([Pxx,Pxy,Pxz,Pxy,Pyy,Pyz,Pxz,Pyz,Pzz]).reshape((3,3)+Pxx.shape)
+    def x2scalar(self, vx):
+        return 0.5*(vx + np.roll(vx,1,axis=0))
+    def y2scalar(self, vy):
+        return 0.5*(vy + np.roll(vy,1,axis=1))
+    def z2scalar(self, vz):
+        return 0.5*(vz + np.roll(vz,1,axis=2))
+    def xyzScalar(self, v):
+        return self.x2scalar(v[0]), self.y2scalar(v[1]), self.z2scalar(v[2])
     
 class SPM:
     def _particleGridDistance(self, Ri):
@@ -137,6 +147,12 @@ class SPM:
     def _janus(self, p, Ri, ni, func):
         avg,delta = (p['head'] + p['tail'])/2, (p['head'] - p['tail'])
         return avg, delta, avg + self._janusmap(Ri, ni)*(delta/2)*func(self._particleGridDistance(Ri)/self.particle.radius)
+
+    def makeDielectricField(self, electric_property, position, rotation, phi_, particle_id=0):
+        avg,delta,test = self._janus(electric_property['epsilon'], position[particle_id], rotation[particle_id], (lambda x: x))
+        epsilon = test*phi_+(1-phi_)*electric_property['epsilon']['fluid']
+        d_epsilon       = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
+        return epsilon, d_epsilon
 
     def ffta(self, a):
         """Fourier transform of scalar field a(r)"""
@@ -214,6 +230,9 @@ class SPM2D(SPM):
         return np.stack([self.grid.K[0]*UK[0] + self.grid.K[1]*UK[1], \
                          self.grid.K[0]*UK[1] + self.grid.K[1]*UK[2]])
 
+    def sloverRotation(self, omega, rotation):
+        return omega*(np.dstack([-rotation[:,-1], rotation[:,0]]).reshape(rotation.shape))
+
     def makeTanOp(self, phi_dmy):
         gradPhi = self.ifftu(1j*np.array(self.grid.K)*self.ffta(phi_dmy)[None,...])
         norm = np.linalg.norm(gradPhi, axis=0)
@@ -225,12 +244,6 @@ class SPM2D(SPM):
             n[i][iid1] = 0
         return np.stack([np.ones_like(n[0])-n[0]*n[0], -n[0]*n[1]
                                     ,-n[1]*n[0], np.ones_like(n[1])-n[1]*n[1]]).reshape((2,2)+n[0].shape)
-
-    def makeDielectricField(self, electric_property, position, rotation, phi_, particle_id=0):
-        avg,delta,test = self._janus(electric_property['epsilon'], position[particle_id], rotation[particle_id], (lambda x: x))
-        epsilon = test*phi_+(1-phi_)*electric_property['epsilon']['fluid']
-        d_epsilon       = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
-        return epsilon, d_epsilon
 
 class SPM3D(SPM):
     def __init__(self, params):
@@ -287,4 +300,21 @@ class SPM3D(SPM):
         u = self.ifftu(uk)
         UK= self.fftu([u[0]**2, u[0]*u[1], u[0]*u[2], u[1]**2, u[1]*u[2], u[2]**2])
         return np.stack([UK[0], UK[1], UK[2], UK[1], UK[3], UK[4], UK[2], UK[4], UK[5]]).reshape((3,3)+UK[0].shape)
+
+    def makeTanOp(self, phi_dmy):
+        gradPhi = self.ifftu(1j*np.array(self.grid.K)*self.ffta(phi_dmy)[None,...])
+        norm = np.linalg.norm(gradPhi, axis=0)
+        n = gradPhi/np.where(norm == 0, 1, norm).astype(float)
+        iid0 = phi_dmy==0
+        iid1 = phi_dmy==1
+        iid2 = phi_dmy==2
+        for i in range(3):
+            n[i][iid0] = 0
+            n[i][iid1] = 0
+            n[i][iid2] = 0
+        return np.stack([np.ones_like(n[0])-n[0]*n[0], -n[0]*n[1], -n[0]*n[2]
+                        ,-n[1]*n[0], np.ones_like(n[1])-n[1]*n[1], -n[1]*n[2]
+                        ,-n[2]*n[0], -n[2]*n[1], np.ones_like(n[2])-n[2]*n[2]]).reshape((3,3)+n[0].shape)
     
+    def sloverRotation(self, omega, rotation):
+        return np.cross(omega, rotation)
