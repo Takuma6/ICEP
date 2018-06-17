@@ -30,7 +30,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     rho_e               =   makeRhoe(charge, ze, phi_s)
     
     # 2 - advection / diffusion
-    uk                  =   fluidSolver(uk); uk[:,0,0,0] = 0
+    uk                  =   fluidSolver(uk); uk[:,0,0] = 0
     position, rotation  =   posSolver(position, velocity, rotation, omega)
     phi                 =   sys.makePhi(phiFunc, position)
     phi_s               =   sys.makePhi(phi_sine, position) 
@@ -41,7 +41,8 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     potential, electricfield, rho_b   =   potentialSolver(eps, Ext, rho_e)
     potential          +=   potential_ext
     electricfield      +=   Ext 
-    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e[None,...]*electricfield)); uk[:,0,0,0] = 0
+    #uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e[None,...]*electricfield)); uk[:,0,0,0] = 0
+    uk                  =   solverEHD(uk, rho_e, electricfield, deps); uk[:,0,0] = 0
     
     # 4 - hydrodynamic forces
     u                   =   sys.ifftu(uk)
@@ -53,7 +54,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     u                   =   sys.makeUp(phiFunc, position, velocity, omega) - phi[None,...]*u   
     
     # 6 - particle constraint force
-    uk                  = uk + np.einsum('ij...,j...->i...', PKsole, sys.fftu(u)); uk[:,0,0,0] = 0
+    uk                  = uk + np.einsum('ij...,j...->i...', PKsole, sys.fftu(u)); uk[:,0,0] = 0
     
     return phi, uk, position, rotation, velocity, omega, force_h/dt, torque_h/dt, charge, potential, electricfield, rho_e, rho_b
 
@@ -63,6 +64,17 @@ def solverNS(uk):
     gnl    = -1j*np.einsum('ij...,k...,kj...->i...', PKsole, sys.grid.K, sys.makeAdvectionK(uk))
     ukstar = np.stack([phihL[0]*uk_d + dt*phihL[1]*gnl_d for uk_d,gnl_d in zip(uk,gnl)])
     return ukstar
+
+def solverEHD(uk, free_charge_density, electricfield, deps):
+    def _from_staggered_to_normal(vector):
+        dmy = np.zeros_like(vector)
+        for i in range(len(vector)):
+            dmy[i][...] = 0.5*(vector[i] + np.roll(vector[i], 1, axis=i))
+        return dmy
+    E_on_normal = _from_staggered_to_normal(electricfield)
+    A = free_charge_density[None,...]*E_on_normal
+    B = -np.einsum("i...,i...->...", E_on_normal, E_on_normal)*_from_staggered_to_normal(deps)/2
+    return uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(A+B))
 
 def solverParticlePos(position, velocity, rotation, omega):
     position_new = utils.pbc(position + velocity * dt, sys.grid.length)
@@ -172,7 +184,7 @@ def saveh5(i, output, u, phi, position, rotation, velocity, omega, force, torque
 print("SPM simulatin starts!", flush=True)
 # system 
 Np   = 6
-dim  = 3
+dim  = 2
 if dim==2:
     sys  = spm.SPM2D({'grid':{'powers':[Np,Np], 'dx':0.5},\
                       'particle':{'a':5, 'a_xi':2, 'mass_ratio':1.2},\
@@ -198,16 +210,17 @@ em       = {'epsilon':{'head':100, 'tail':10, 'fluid':1}, \
 
 # particle property
 R     = np.ones((1,dim))*sys.grid.length/2
-Q     = sys.normalize([[1,0,0]]) 
+Q     = sys.normalize([[1,0]]) 
 V     = np.zeros_like(R)
-O     = np.zeros_like(R) #np.zeros(len(R))
+O     = np.zeros(len(R)) #2d
+#O     = np.zeros_like(R) #3d
 
 # field property
 phi                =   sys.makePhi(phir, R)
 PKsole             =   sys.grid._solenoidalProjectorK()
 uk                 =   np.einsum('ij...,j...->i...', PKsole, sys.fftu(sys.makeUp(phir, R, V, O)))
-#charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
-charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1], sys.grid.ns[2]))
+charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
+#charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1], sys.grid.ns[2])) #3d
 rho_e              =   makeRhoe(charge, ze, phi)
 
 Ext, potential_ext    =   uniform_ElectricField_x()
