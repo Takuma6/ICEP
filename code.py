@@ -38,11 +38,11 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     
     # 3 - electrostatic field
     # Ext. pot_ext are local variables
-    potential, electricfield, rho_b   =   potentialSolver(eps, Ext, rho_e)
+    potential, electricfield, rho_b, f_maxwell   =   potentialSolver(eps, Ext, rho_e, deps)
     potential          +=   potential_ext
     electricfield      +=   Ext 
-    #uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e[None,...]*electricfield)); uk[:,0,0,0] = 0
-    uk                  =   solverEHD(uk, rho_e, electricfield, deps); uk[:,0,0] = 0
+    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(f_maxwell)); uk[:,0,0] = 0
+    #uk                  =   solverEHD(uk, rho_e, electricfield, deps); uk[:,0,0] = 0
     
     # 4 - hydrodynamic forces
     u                   =   sys.ifftu(uk)
@@ -56,8 +56,8 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     # 6 - particle constraint force
     uk                  = uk + np.einsum('ij...,j...->i...', PKsole, sys.fftu(u)); uk[:,0,0] = 0
     
-    return phi, uk, position, rotation, velocity, omega, force_h/dt, torque_h/dt, charge, potential, electricfield, rho_e, rho_b
-
+    return phi, uk, position, rotation, velocity, omega, force_h/dt, torque_h/dt, \
+    	   charge, potential, electricfield, rho_e, rho_b, f_maxwell, eps
 
 # fluid & particle dynamics
 def solverNS(uk):
@@ -107,7 +107,7 @@ def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
     C = sys.fftu(gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, -electric_field))
     return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K, (A-B-C)))
 
-def solverPoisson(eps, Ext, rho_e):  
+def solverPoisson(eps, Ext, rho_e, deps):  
     def mvps(v):
         w = v.view()
         w.shape = eps.shape
@@ -150,19 +150,90 @@ def solverPoisson(eps, Ext, rho_e):
     E[...]  = sys.grid.xyzScalar(E)
     return pot, E, rho_b
 
+def solverPoisson2(eps, Ext, rho_e, deps):  
+    def mvps(v):
+        w = v.view()
+        w.shape = eps.shape
+        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    def rhs():
+        dmy = Ext.copy()
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    class gmres_counter(object):
+        def __init__(self, disp=True):
+            self._disp = disp
+            self.niter = 0
+        def __call__(self, rk=None):
+            self.niter += 1
+            if self._disp:
+                print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
+    
+    NN            = np.prod(eps.shape)
+    A             = LinearOperator((NN,NN), matvec=mvps)
+    b             = rhs() - rho_e.reshape(NN)
+    counter       = gmres_counter()
+    pot, exitcode = sp.sparse.linalg.lgmres(A, b, tol=1e-5)#, callback=counter)
+    pot.shape     = eps.shape
+    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
+
+    def bound_charge_solver(E_total, epsilon0):
+        dmy = E_total.copy()
+        eps_minus_eps0 = eps - epsilon0
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        return dmy
+    rho_b   = -bound_charge_solver(E+Ext, 1)
+    
+    def _solve_maxwell_force(E_, deps_, free_charge):
+        def _from_staggered_to_normal(vector):
+            dmy = np.zeros_like(vector)
+            for i in range(len(vector)):
+                dmy[i][...] = 0.5*(vector[i] + np.roll(vector[i], 1, axis=i))
+            return dmy
+        def _from_normal_to_staggered(scalar, dimention):
+            dmy = np.zeros((dimention,)+ scalar.shape)
+            for i in range(dimention):
+                dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
+            return dmy
+        dmy = _from_staggered_to_normal(E_)
+        E_2 = np.linalg.norm(dmy, axis=0)
+        dmy_stag = deps_.copy()
+        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
+        dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy_normal = _from_staggered_to_normal(dmy_stag)
+        return dmy_stag, dmy_normal
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
+    
+    E[...]  = sys.grid.xyzScalar(E)
+    return pot, E, rho_b, f_maxwell_normal
+
 def uniform_ElectricField_x(coef_E = 1):
     Ext = np.zeros_like(sys.ifftu(uk)); Ext[0] = coef_E
     potential_ext = np.array(np.max(sys.grid.X[0]) - sys.grid.X[0])*coef_E
     return Ext, potential_ext
 
+def uniform_ElectricField_y(coef_E = 1):
+    Ext = np.zeros_like(sys.ifftu(uk)); Ext[1] = coef_E
+    potential_ext = np.array(np.max(sys.grid.X[1]) - sys.grid.X[1])*coef_E
+    return Ext, potential_ext
 
 setder = lambda i : "trajectory/frame_" + str(np.int(i))
 def saveh5(i, output, u, phi, position, rotation, velocity, omega, force, torque, \
-           concentration, free_charge_density, bound_charge_density, electric_potential, electric_field, time):
+           concentration, free_charge_density, bound_charge_density, electric_potential, electric_field, eps, f_maxwell, time):
     output.create_group(setder(i))
     output.create_dataset(setder(i)+'/Time', data = time*i)
     output.create_dataset(setder(i)+'/u', data = u)
     output.create_dataset(setder(i)+'/phi', data = phi)
+    output.create_dataset(setder(i)+'/epsilon', data = eps)
     output.flush()
     output.create_dataset(setder(i)+'/R', data = position)
     output.create_dataset(setder(i)+'/Q', data = rotation)
@@ -177,6 +248,7 @@ def saveh5(i, output, u, phi, position, rotation, velocity, omega, force, torque
     output.create_dataset(setder(i)+'/bound_charge_density', data = bound_charge_density)
     output.create_dataset(setder(i)+'/electric_potential', data = electric_potential)
     output.create_dataset(setder(i)+'/electric_field', data = electric_field)
+    output.create_dataset(setder(i)+'/maxwell_force', data = f_maxwell)
     output.flush()
 
 
@@ -205,7 +277,7 @@ gamma    = np.ones(2)[...,None]
 kbT      = 1
 species  = 2
 epsilon0 = 1
-em       = {'epsilon':{'head':100, 'tail':10, 'fluid':1}, \
+em       = {'epsilon':{'head':10, 'tail':0.1, 'fluid':1}, \
 			'sigma':{'head':0, 'tail':0, 'fluid':0}}
 
 # particle property
@@ -226,7 +298,7 @@ rho_e              =   makeRhoe(charge, ze, phi)
 Ext, potential_ext    =   uniform_ElectricField_x()
 phi_s                 =   sys.makePhi(phi_sine, R) 
 eps, deps             =   sys.makeDielectricField(em, R, Q, phi_s)
-potential, E, rho_b   =   solverPoisson(eps, Ext, rho_e)
+potential, E, rho_b, f_maxwell   =   solverPoisson2(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
@@ -234,14 +306,14 @@ nframes = 100
 ngts    = 100
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, dt*ngts)
+saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)
     for gts in range(ngts):
-        phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b \
-            = solver(phi, uk, R, Q, V, O, charge, E, phir, solverNS, constantRotation, solverParticleVel, solverPoisson)
-    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, dt*ngts)
+        phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b, f_maxwell, eps \
+            = solver(phi, uk, R, Q, V, O, charge, E, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
+    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
     outfh.flush()
 
 outfh.flush()
