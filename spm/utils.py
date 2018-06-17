@@ -53,7 +53,7 @@ def phiGauss(x, a, xi, delta):
         float : phi(r) value of phase field at position r"""
     def h(x):
         ans = np.zeros_like(x)
-        sel = (x >= 0.0)
+        sel = (x > 0.0)
         ans[sel] = np.exp(-(delta/x[sel])**2)
         return ans
     hxi = xi/2.0
