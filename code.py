@@ -22,7 +22,7 @@ def reload():
 
 # main function
 def solver(phi, uk, position, rotation, velocity, omega, \
-                   charge, electricfield, \
+                   charge, electricfield, electric_potential, \
                    phiFunc, fluidSolver, posSolver, velSolver, potentialSolver):
     # 1 - solute concentration
     phi_s               =   sys.makePhi(phi_sine, position) 
@@ -38,10 +38,10 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     
     # 3 - electrostatic field
     # Ext. pot_ext are local variables
-    potential, electricfield, rho_b, f_maxwell   =   potentialSolver(eps, Ext, rho_e, deps)
+    potential, electricfield, rho_b, f_maxwell   =   potentialSolver(eps, Ext, rho_e, deps, electric_potential-potential_ext)
     potential          +=   potential_ext
     electricfield      +=   Ext 
-    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(f_maxwell)); uk[:,0,0] = 0
+    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e*electricfield+f_maxwell)); uk[:,0,0] = 0
     #uk                  =   solverEHD(uk, rho_e, electricfield, deps); uk[:,0,0] = 0
     
     # 4 - hydrodynamic forces
@@ -132,49 +132,6 @@ def solverPoisson(eps, Ext, rho_e, deps):
             self.niter += 1
             if self._disp:
                 print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
-    NN            = np.prod(eps.shape)
-    A             = LinearOperator((NN,NN), matvec=mvps)
-    b             = rhs() - rho_e.reshape(NN)
-    counter       = gmres_counter()
-    pot, exitcode = sp.sparse.linalg.lgmres(A, b, tol=1e-4)#, callback=counter)
-    pot.shape     = eps.shape
-    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
-    def bound_charge_solver(E_total, epsilon0):
-        dmy = E_total.copy()
-        eps_minus_eps0 = eps - epsilon0
-        for i in range(len(dmy)):
-            dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        return dmy
-    rho_b   = -bound_charge_solver(E + Ext, 1)
-    E[...]  = sys.grid.xyzScalar(E)
-    return pot, E, rho_b
-
-def solverPoisson2(eps, Ext, rho_e, deps):  
-    def mvps(v):
-        w = v.view()
-        w.shape = eps.shape
-        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
-        for i in range(len(dmy)):
-            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
-        return dmy
-    def rhs():
-        dmy = Ext.copy()
-        for i in range(len(dmy)):
-            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
-        return dmy
-    class gmres_counter(object):
-        def __init__(self, disp=True):
-            self._disp = disp
-            self.niter = 0
-        def __call__(self, rk=None):
-            self.niter += 1
-            if self._disp:
-                print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
     
     NN            = np.prod(eps.shape)
     A             = LinearOperator((NN,NN), matvec=mvps)
@@ -216,12 +173,78 @@ def solverPoisson2(eps, Ext, rho_e, deps):
     E[...]  = sys.grid.xyzScalar(E)
     return pot, E, rho_b, f_maxwell_normal
 
-def uniform_ElectricField_x(coef_E = 1):
+def solverPoisson2(eps, Ext, rho_e, deps, potential_in):  
+    def mvps(v):
+        w = v.view()
+        w.shape = eps.shape
+        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    def rhs():
+        dmy = Ext.copy()
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    class gmres_counter(object):
+        def __init__(self, disp=True):
+            self._disp = disp
+            self.niter = 0
+        def __call__(self, rk=None):
+            self.niter += 1
+            if self._disp:
+                print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
+    
+    NN            = np.prod(eps.shape)
+    A             = LinearOperator((NN,NN), matvec=mvps)
+    b             = rhs() - rho_e.reshape(NN)
+    counter       = gmres_counter()
+    pot, exitcode = sp.sparse.linalg.lgmres(A, b, x0=potential_in.reshape(NN), tol=1e-5)#, callback=counter)
+    pot.shape     = eps.shape
+    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
+
+    def bound_charge_solver(E_total, epsilon0):
+        dmy = E_total.copy()
+        eps_minus_eps0 = eps - epsilon0
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        return dmy
+    rho_b   = -bound_charge_solver(E+Ext, 1)
+    
+    def _solve_maxwell_force(E_, deps_, free_charge):
+        def _from_staggered_to_normal(vector):
+            dmy = np.zeros_like(vector)
+            for i in range(len(vector)):
+                dmy[i][...] = 0.5*(vector[i] + np.roll(vector[i], 1, axis=i))
+            return dmy
+        def _from_normal_to_staggered(scalar, dimention):
+            dmy = np.zeros((dimention,)+ scalar.shape)
+            for i in range(dimention):
+                dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
+            return dmy
+        dmy = _from_staggered_to_normal(E_)
+        E_2 = np.linalg.norm(dmy, axis=0)
+        dmy_stag = deps_.copy()
+        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
+        #dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy_normal = _from_staggered_to_normal(dmy_stag)
+        return dmy_stag, dmy_normal
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
+    
+    E[...]  = sys.grid.xyzScalar(E)
+    return pot, E, rho_b, f_maxwell_normal
+
+def uniform_ElectricField_x(coef_E = .1):
     Ext = np.zeros_like(sys.ifftu(uk)); Ext[0] = coef_E
     potential_ext = np.array(np.max(sys.grid.X[0]) - sys.grid.X[0])*coef_E
     return Ext, potential_ext
 
-def uniform_ElectricField_y(coef_E = 1):
+def uniform_ElectricField_y(coef_E = .1):
     Ext = np.zeros_like(sys.ifftu(uk)); Ext[1] = coef_E
     potential_ext = np.array(np.max(sys.grid.X[1]) - sys.grid.X[1])*coef_E
     return Ext, potential_ext
@@ -298,7 +321,7 @@ rho_e              =   makeRhoe(charge, ze, phi)
 Ext, potential_ext    =   uniform_ElectricField_x()
 phi_s                 =   sys.makePhi(phi_sine, R) 
 eps, deps             =   sys.makeDielectricField(em, R, Q, phi_s)
-potential, E, rho_b, f_maxwell   =   solverPoisson2(eps, Ext, rho_e, deps)
+potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
@@ -312,7 +335,7 @@ for frame in range(nframes):
     print("now at loop:",frame, flush=True)
     for gts in range(ngts):
         phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b, f_maxwell, eps \
-            = solver(phi, uk, R, Q, V, O, charge, E, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
+            = solver(phi, uk, R, Q, V, O, charge, E, potential, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
     saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
     outfh.flush()
 
