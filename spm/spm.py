@@ -283,7 +283,7 @@ class SPM3D(SPM):
             O : old particle angular velocities at t_n"""
         def particleForce(phi, u, Ri, Vi, Oi):
             dRi = self._particleGridDisplacement(Ri)
-            fpi = phi(np.linalg.norm(dRi, axis=0)) * (self._particleGridVelocity(dRi, Vi, Oi) - u)
+            fpi = -phi(np.linalg.norm(dRi, axis=0)) * (self._particleGridVelocity(dRi, Vi, Oi) - u)
             dmy = np.stack([np.sum(fpi, axis=(1,2,3)), np.sum(np.cross(dRi, fpi, axis=0), axis=(1,2,3))])
             return dmy
         dvrho = self.grid.dv*self.fluid.rho
@@ -307,11 +307,9 @@ class SPM3D(SPM):
         n = gradPhi/np.where(norm == 0, 1, norm).astype(float)
         iid0 = phi_dmy==0
         iid1 = phi_dmy==1
-        iid2 = phi_dmy==2
         for i in range(3):
             n[i][iid0] = 0
             n[i][iid1] = 0
-            n[i][iid2] = 0
         return np.stack([np.ones_like(n[0])-n[0]*n[0], -n[0]*n[1], -n[0]*n[2]
                         ,-n[1]*n[0], np.ones_like(n[1])-n[1]*n[1], -n[1]*n[2]
                         ,-n[2]*n[0], -n[2]*n[1], np.ones_like(n[2])-n[2]*n[2]]).reshape((3,3)+n[0].shape)
