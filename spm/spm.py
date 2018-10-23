@@ -245,6 +245,26 @@ class SPM2D(SPM):
         return np.stack([np.ones_like(n[0])-n[0]*n[0], -n[0]*n[1]
                                     ,-n[1]*n[0], np.ones_like(n[1])-n[1]*n[1]]).reshape((2,2)+n[0].shape)
 
+    def makeSurfaceNormalShift(self, phi_dmy):
+        def _interpolateNorm(vec, axis):
+            _dmy = np.zeros_like(vec)
+            for i in range(2):
+                if i==axis:
+                    _dmy[i] = vec[i]**2
+                else:
+                    _dmy[i] = (vec[i]**2 + np.roll(vec[i], -1, axis=axis)**2)/2
+            return (_dmy[0]+_dmy[1])**(1/2)    
+        gradPhi = self.ifftu(1j*np.array(self.grid.K)*sys.grid.shiftK()*self.ffta(phi_dmy)[None,...])
+        for i in range(2):
+            norm = _interpolateNorm(gradPhi, axis=i)
+            n[i] = gradPhi[i]/np.where(norm == 0, 1, norm).astype(float)
+        iid0 = phi_dmy==0
+        iid1 = phi_dmy==1
+        for i in range(2):
+            n[i][iid0] = 0
+            n[i][iid1] = 0
+        return n
+
 class SPM3D(SPM):
     def __init__(self, params):
         """Instantiate 3D SPM object"""
