@@ -34,14 +34,14 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     position, rotation  =   posSolver(position, velocity, rotation, omega)
     phi                 =   sys.makePhi(phiFunc, position)
     phi_s               =   sys.makePhi(phi_sine, position) 
-    eps,deps            =   sys.makeDielectricField(em, position, rotation, phi_s)
+    eps,deps            =   sys.makeDielectricField_tanh(em, position, rotation, phi_s)
     
     # 3 - electrostatic field
     # Ext. pot_ext are local variables
     potential, electricfield, rho_b, f_maxwell   =   potentialSolver(eps, Ext, rho_e, deps, electric_potential-potential_ext)
     potential          +=   potential_ext
     electricfield      +=   Ext 
-    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(rho_e*electricfield+f_maxwell)); uk[:,0,0] = 0
+    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(f_maxwell)); uk[:,0,0] = 0
     #uk                  =   solverEHD(uk, rho_e, electricfield, deps); uk[:,0,0] = 0
     
     # 4 - hydrodynamic forces
@@ -103,6 +103,7 @@ def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
     nnsole  = sys.makeTanOp(phi_dmy)
     chargek = sys.ffta(charge)            
     A = sys.fftu(u*charge[None,...])
+    #A = sys.fftu(np.einsum("ij..., j...->i...", nnsole,u*charge[None,...]))
     B = sys.fftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.ifftu(1j*np.array(sys.grid.K)*chargek[None,...])))
     C = sys.fftu(gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, -electric_field))
     return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K, (A-B-C)))
@@ -231,7 +232,7 @@ def solverPoisson2(eps, Ext, rho_e, deps, potential_in):
         E_2 = np.linalg.norm(dmy, axis=0)
         dmy_stag = deps_.copy()
         dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
-        #dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
         dmy_normal = _from_staggered_to_normal(dmy_stag)
         return dmy_stag, dmy_normal
     f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
@@ -300,6 +301,8 @@ gamma    = np.ones(2)[...,None]
 kbT      = 1
 species  = 2
 epsilon0 = 1
+coef_E   = 0.5
+coef_n   = 0.1
 em       = {'epsilon':{'head':10, 'tail':0.1, 'fluid':1}, \
 			'sigma':{'head':0, 'tail':0, 'fluid':0}}
 
@@ -314,13 +317,13 @@ O     = np.zeros(len(R)) #2d
 phi                =   sys.makePhi(phir, R)
 PKsole             =   sys.grid._solenoidalProjectorK()
 uk                 =   np.einsum('ij...,j...->i...', PKsole, sys.fftu(sys.makeUp(phir, R, V, O)))
-charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
+charge             =   coef_n*np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
 #charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1], sys.grid.ns[2])) #3d
 rho_e              =   makeRhoe(charge, ze, phi)
 
-Ext, potential_ext    =   uniform_ElectricField_x()
+Ext, potential_ext    =   uniform_ElectricField_y(coef_E=coef_E)
 phi_s                 =   sys.makePhi(phi_sine, R) 
-eps, deps             =   sys.makeDielectricField(em, R, Q, phi_s)
+eps, deps             =   sys.makeDielectricField_tanh(em, R, Q, phi_s)
 potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     

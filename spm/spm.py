@@ -117,6 +117,17 @@ class SPM:
             phi(r) = \sum_i phi_i(r)"""
         return functools.reduce(lambda a, b: a + b, map(lambda Ri: phi(self._particleGridDistance(Ri)), R))
 
+    def makePhi_janus(self, phi, R, N):
+        """Compute phi field with janus parameter for given particle configuration
+        
+        Args:
+            phi : phi(r) function
+            R   : particle translational position vectors
+            N   : particle rotational position vectors
+        Returns:
+            phi(r) = \sum_i phi_i(r)"""
+        return functools.reduce(lambda a, b: a + b, map(lambda Ri, ni: phi(self._particleGridDistance(Ri))*_janusmap_tanh(self, Ri, ni), R, N))
+
     def makeUp(self, phi, R, V, O):
         """Compute total particle velocity field for given particle configuration
         
@@ -152,6 +163,27 @@ class SPM:
         avg,delta,test = self._janus(electric_property['epsilon'], position[particle_id], rotation[particle_id], (lambda x: x))
         epsilon = test*phi_+(1-phi_)*electric_property['epsilon']['fluid']
         d_epsilon       = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
+        return epsilon, d_epsilon
+
+    def _janusmap_tanh(self, Ri, ni):
+        r    = self._particleGridDisplacement(Ri)
+        r    = np.einsum('i,i...->...', ni, r)
+        norm = np.linalg.norm(r, axis=0)
+        idx  = norm > 0
+        r[:,idx] = r[:,idx] / norm[idx]
+        r[:,np.logical_not(idx)] = 0
+        return r
+
+    def _janus_tanh(self, p, R, n, sharpness=200):
+        avg,delta = (p['head'] + p['tail'])/2, (p['head'] - p['tail'])
+        phi_sine  = (lambda x : utils.phiSine(x, sys.particle.radius, sys.particle.xi))
+        dmy       = self.makePhi_janus(self, phi_sine, R, N)
+        return avg, delta, avg + (delta/2)*np.tanh(sharpness*dmy)
+
+    def makeDielectricField_tanh(self, electric_property, position, rotation, phi_, sharpness=200):
+        avg,delta,test = self._janus_tanh(electric_property['epsilon'], position, rotation)
+        epsilon        = test*phi_+(1-phi_)*electric_property['epsilon']['fluid']
+        d_epsilon      = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
         return epsilon, d_epsilon
 
     def ffta(self, a):
@@ -254,7 +286,7 @@ class SPM2D(SPM):
                 else:
                     _dmy[i] = (vec[i]**2 + np.roll(vec[i], -1, axis=axis)**2)/2
             return (_dmy[0]+_dmy[1])**(1/2)    
-        gradPhi = self.ifftu(1j*np.array(self.grid.K)*sys.grid.shiftK()*self.ffta(phi_dmy)[None,...])
+        gradPhi = self.ifftu(1j*np.array(self.grid.K)*self.grid.shiftK()*self.ffta(phi_dmy)[None,...])
         for i in range(2):
             norm = _interpolateNorm(gradPhi, axis=i)
             n[i] = gradPhi[i]/np.where(norm == 0, 1, norm).astype(float)

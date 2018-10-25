@@ -22,11 +22,13 @@ def reload():
 
 # main function
 def solver(phi, uk, position, rotation, velocity, omega, \
-                   charge, electricfield, \
+                   charge, electricfield, electric_potential, \
                    phiFunc, fluidSolver, posSolver, velSolver, potentialSolver):
     # 1 - solute concentration
     phi_s               =   sys.makePhi(phi_sine, position) 
-    charge              =   np.array([solverC(ci, sys.ifftu(uk) , position, electricfield, gi, zi, phi_s) for ci,gi,zi in zip(charge, gamma, ze)])
+    #uk                 *=   sys.grid.shiftK()           #shift
+    charge              =   np.array([solverC(ci, sys.ifftu(uk) , position, sys.grid.xyzScalar(electricfield), gi, zi, phi_s) for ci,gi,zi in zip(charge, gamma, ze)])
+    #uk                 *=   np.conj(sys.grid.shiftK())  #recover
     rho_e               =   makeRhoe(charge, ze, phi_s)
     
     # 2 - advection / diffusion
@@ -38,11 +40,13 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     
     # 3 - electrostatic field
     # Ext. potential_ext are global variables
+    # and E is always on staggered
     potential, electricfield, rho_b, f_maxwell   =   potentialSolver(eps, Ext, rho_e, deps, electric_potential-potential_ext)
     potential          +=   potential_ext
     electricfield      +=   Ext 
+    f_maxwell          +=   multiply_scalar_to_vec_stag(electricfield, rho_e)
     uk                 *=   sys.grid.shiftK()           #shift
-    uk                  =   uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(multiply_scalar_to_vec_stag(electricfield, rho_e)f_maxwell)); uk[:,0,0] = 0
+    uk                  =   uk + dt*solenoidal_shift(f_maxwell); uk[:,0,0] = 0
     uk                 *=   np.conj(sys.grid.shiftK())  #recover
     
     # 4 - hydrodynamic forces
@@ -77,6 +81,12 @@ def solverEHD(uk, free_charge_density, electricfield, deps):
     B = -np.einsum("i...,i...->...", E_on_normal, E_on_normal)*_from_staggered_to_normal(deps)/2
     return uk + dt*np.einsum('ij...,j...->i...', PKsole, sys.fftu(A+B))
 
+def solenoidal_shift(vec):
+    dmy = np.einsum('i...,i...->...', np.array(sys.grid.K)*np.conj(sys.grid.shiftK()), sys.fftu(vec))
+    dmy = dmy[None,...]*np.array(sys.grid.K)*np.array(sys.grid.shiftK())
+    ik2 = 1 / np.where(sys.grid.K2 == 0, 1, sys.grid.K2).astype(float)
+    return sys.fftu(vec) - dmy*ik2
+
 def solverParticlePos(position, velocity, rotation, omega):
     position_new = utils.pbc(position + velocity * dt, sys.grid.length)
     rotation_new = rotation + dt*sys.sloverRotation(omega, rotation)
@@ -109,23 +119,97 @@ def multiply_scalar_to_vec_stag(vec, scalar):
 def makeDotProductShift(vec1, vec2, scalar_shape):
     dmy = np.zeros_like(scalar_shape)
     for i in range(dim):
-        dmy[...] += 0.5*(vec1[i]*vec2[i] + np.roll(vec1[i], 1, axis=i)+np.roll(vec2[i], 1, axis=i))
+        dmy[...] += 0.5*(vec1[i]*vec2[i] + np.roll(vec1[i], 1, axis=i)*np.roll(vec2[i], 1, axis=i))
     return dmy
 
 def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
-    surface_normal = makeSurfaceNormalShift(phi_dmy)
+    nnsole  = sys.makeTanOp(phi_dmy)
+    chargek = sys.ffta(charge)            
+    A = sys.fftu(u*charge[None,...])
+    B = sys.fftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.ifftu(1j*np.array(sys.grid.K)*chargek[None,...])))
+    C = sys.fftu(-gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, electric_field))
+    return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K, (A-B-C)))
+
+def solverC_shift(charge, u, position, electric_field, gamma, ze, phi_dmy):
+    surface_normal = sys.makeSurfaceNormalShift(phi_dmy)
     chargek = sys.ffta(charge)       
     # for Advection term, A     
     A    = sys.fftu(multiply_scalar_to_vec_stag(u, charge))
     # for Diffusion term, B
     B    = gamma*kbT*sys.ifftu(1j*np.array(sys.grid.K)*sys.grid.shiftK()*chargek[None,...])
-    B   += multiply_scalar_to_vec_stag(-electric_field, gamma*ze*charge)[None,...]
-    dmy  = makeDotProductShift(surface_normal, dmy, charge)
-    B   -= dmy2*surface_normal
+    B   += multiply_scalar_to_vec_stag(-electric_field, gamma*ze*charge)
+    dmy  = makeDotProductShift(surface_normal, B, charge)
+    B   -= dmy[None,...]*surface_normal
     B    = sys.fftu(dmy)
     #B = sys.fftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.ifftu(1j*np.array(sys.grid.K)*chargek[None,...])))
     #C = sys.fftu(gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, -electric_field))
-    return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K*np.conj(sys.grid.shift()), (A-B)))
+    return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", np.array(sys.grid.K)*np.conj(sys.grid.shiftK()), (A-B)))
+
+def solverPoisson(eps, Ext, rho_e, deps):  
+    def mvps(v):
+        w = v.view()
+        w.shape = eps.shape
+        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    def rhs():
+        dmy = Ext.copy()
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy.shape = (NN)
+        return dmy
+    class gmres_counter(object):
+        def __init__(self, disp=True):
+            self._disp = disp
+            self.niter = 0
+        def __call__(self, rk=None):
+            self.niter += 1
+            if self._disp:
+                print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
+    
+    NN            = np.prod(eps.shape)
+    A             = LinearOperator((NN,NN), matvec=mvps)
+    b             = rhs() - rho_e.reshape(NN)
+    counter       = gmres_counter()
+    pot, exitcode = sp.sparse.linalg.lgmres(A, b, tol=1e-5)#, callback=counter)
+    pot.shape     = eps.shape
+    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
+
+    def bound_charge_solver(E_total, epsilon0):
+        dmy = E_total.copy()
+        eps_minus_eps0 = eps - epsilon0
+        for i in range(len(dmy)):
+            dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
+        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        return dmy
+    rho_b   = -bound_charge_solver(E+Ext, 1)
+    
+    def _solve_maxwell_force(E_, deps_, free_charge):
+        def _from_staggered_to_normal(vector):
+            dmy = np.zeros_like(vector)
+            for i in range(len(vector)):
+                dmy[i][...] = 0.5*(vector[i] + np.roll(vector[i], 1, axis=i))
+            return dmy
+        def _from_normal_to_staggered(scalar, dimention):
+            dmy = np.zeros((dimention,)+ scalar.shape)
+            for i in range(dimention):
+                dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
+            return dmy
+        dmy = _from_staggered_to_normal(E_)
+        E_2 = np.linalg.norm(dmy, axis=0)
+        dmy_stag = deps_.copy()
+        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
+        dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy_normal = _from_staggered_to_normal(dmy_stag)
+        return dmy_stag, dmy_normal
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
+    
+    #E[...]  = sys.grid.xyzScalar(E)
+    return pot, E, rho_b, f_maxwell_staggered
 
 def solverPoisson2(eps, Ext, rho_e, deps, potential_in):  
     def mvps(v):
@@ -255,15 +339,13 @@ kbT      = 1
 species  = 2
 epsilon0 = 1
 coef_E   = 0.5
-coef_n   = 0.0
+coef_n   = 0.1
 em       = {'epsilon':{'head':10, 'tail':0.1, 'fluid':1}, \
 			'sigma':{'head':0, 'tail':0, 'fluid':0}}
 
 # particle property
-R     = np.ones((3,dim))*sys.grid.length/2
-R[0] -= (sys.particle.radius*2+1)
-R[1] += (sys.particle.radius*2+1)
-Q     = sys.normalize([[1,0],[1,0],[1,0]]) 
+R     = np.ones((1,dim))*sys.grid.length/2
+Q     = sys.normalize([[1,0]]) 
 V     = np.zeros_like(R)
 O     = np.zeros(len(R)) #2d
 #O     = np.zeros_like(R) #3d
@@ -279,22 +361,22 @@ rho_e              =   makeRhoe(charge, ze, phi)
 Ext, potential_ext    =   uniform_ElectricField_y(coef_E=coef_E)
 phi_s                 =   sys.makePhi(phi_sine, R) 
 eps, deps             =   sys.makeDielectricField(em, R, Q, phi_s)
-potential, E, rho_b, f_maxwell   =   solverPoisson2(eps, Ext, rho_e, deps)
+potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
-nframes = 10
-ngts    = 10
+nframes = 100
+ngts    = 100
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, sys.grid.xyzScalar(E), eps, f_maxwell, dt*ngts)
+saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, sys.grid.xyzScalar(E), eps, sys.grid.xyzScalar(f_maxwell), dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)
     for gts in range(ngts):
         phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b, f_maxwell, eps \
-            = solver(phi, uk, R, Q, V, O, charge, E, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
-    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, sys.grid.xyzScalar(E), eps, f_maxwell, dt*ngts)
+            = solver(phi, uk, R, Q, V, O, charge, E, potential, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
+    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, sys.grid.xyzScalar(E), eps, sys.grid.xyzScalar(f_maxwell), dt*ngts)
     outfh.flush()
 
 outfh.flush()
