@@ -126,7 +126,7 @@ class SPM:
             N   : particle rotational position vectors
         Returns:
             phi(r) = \sum_i phi_i(r)"""
-        return functools.reduce(lambda a, b: a + b, map(lambda Ri, ni: phi(self._particleGridDistance(Ri))*_janusmap_tanh(self, Ri, ni), R, N))
+        return functools.reduce(lambda a, b: a + b, map(lambda Ri, ni: phi(self._particleGridDistance(Ri))*self._janusmap_tanh(Ri, ni), R, N))
 
     def makeUp(self, phi, R, V, O):
         """Compute total particle velocity field for given particle configuration
@@ -174,10 +174,10 @@ class SPM:
         r[:,np.logical_not(idx)] = 0
         return r
 
-    def _janus_tanh(self, p, R, n, sharpness=200):
+    def _janus_tanh(self, p, R, N, sharpness=200):
         avg,delta = (p['head'] + p['tail'])/2, (p['head'] - p['tail'])
-        phi_sine  = (lambda x : utils.phiSine(x, sys.particle.radius, sys.particle.xi))
-        dmy       = self.makePhi_janus(self, phi_sine, R, N)
+        phi_sine  = (lambda x : utils.phiSine(x, self.particle.radius, self.particle.xi))
+        dmy       = self.makePhi_janus(phi_sine, R, N)
         return avg, delta, avg + (delta/2)*np.tanh(sharpness*dmy)
 
     def makeDielectricField_tanh(self, electric_property, position, rotation, phi_, sharpness=200):
