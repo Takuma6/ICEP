@@ -52,13 +52,21 @@ class Grid:
         self.K  = np.array(np.meshgrid(*lattice, indexing='ij'))
         self.K2 = np.einsum('i...,i...->...', self.K, self.K)
 
+        # new term for a.c.
+        lattice  = list(map(lambda ni: np.fft.fftfreq(ni, d=self.dx)*2*np.pi, self.ns))
+        self.K_c = np.array(np.meshgrid(*lattice, indexing='ij'))
+
     def maxK2(self):
         """Compute maximum K2 for pseudo-spectral method"""                        
         return self.K2.max()
 
     def shiftK(self):
-        """Return phase factors for staggered grid calculations"""
+        """Return phase factors for staggered grid calculations in rfft"""
         return np.exp(1j*self.K*self.dx/2)
+
+    def shiftK_c(self):
+        """Return phase factors for staggered grid calculations for all k"""
+        return np.exp(1j*self.K_c*self.dx/2)
 
 class Grid2D(Grid):
     dim = 2
@@ -186,6 +194,26 @@ class SPM:
         d_epsilon      = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
         return epsilon, d_epsilon
 
+    # complex permittivity
+    def _complex_permittivity(self, _epsilon, _sigma, _frequency): 
+        return _epsilon -1j*_sigma/_frequency
+
+    def _janus_tanh_complex(self, p, R, N, frequency, sharpness=200):
+        p_head    = self._complex_permittivity(p['epsilon']['head'], p['sigma']['head'], frequency)
+        p_tail    = self._complex_permittivity(p['epsilon']['tail'], p['sigma']['tail'], frequency)
+        avg,delta = (p_head + p_tail)/2, (p_head - p_tail)
+        phi_sine  = (lambda x : utils.phiSine(x, self.particle.radius, self.particle.xi))
+        dmy       = self.makePhi_janus(phi_sine, R, N)
+        return avg, delta, avg + (delta/2)*np.tanh(sharpness*dmy)
+
+    def makeDielectricField_tanh_complex(self, electric_property, position, rotation, phi_, frequency, sharpness=200):
+        avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency)
+        p_fluid        = self._complex_permittivity(electric_property['epsilon']['fluid'], electric_property['sigma']['fluid'], frequency)
+        epsilon        = test*phi_+(1-phi_)*p_fluid
+        d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))
+        return epsilon, d_epsilon
+ 
+    # fft for variables have only real values
     def ffta(self, a):
         """Fourier transform of scalar field a(r)"""
         return np.fft.rfftn(a)
@@ -198,6 +226,20 @@ class SPM:
     def ifftu(self, u):
         """Inverse Fourier transform for vector field u(k) = [u_1(k), u_2(k), ...]"""
         return np.stack([np.fft.irfftn(ui, self.grid.ns) for ui in u])
+
+    # normal fft
+    def cffta(self, a):
+        """Fourier transform of scalar field a(r)"""
+        return np.fft.fftn(a)
+    def icffta(self, a):
+        """Inverse Fourier transform of scalar field a(k)"""
+        return np.fft.ifftn(a, self.grid.ns)
+    def cfftu(self, u):
+        """Fourier transform for vector field u(r) = [u_1(r), u_2(r), ...]"""
+        return np.stack([np.fft.fftn(ui) for ui in u])
+    def icfftu(self, u):
+        """Inverse Fourier transform for vector field u(k) = [u_1(k), u_2(k), ...]"""
+        return np.stack([np.fft.ifftn(ui, self.grid.ns) for ui in u])
 
 class SPM2D(SPM):
     def __init__(self, params):
@@ -297,6 +339,20 @@ class SPM2D(SPM):
             n[i][iid1] = 0
         return n
 
+    def makeRhoe(self, c, ze, phi_dmy):
+        dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
+        dmy = self.ffta(dmy); dmy[0, 0] = 0
+        return self.iffta(dmy)
+
+    def makeRhoe_complex(self, c, ze, phi_dmy):
+        dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
+        dmy = self.cffta(dmy); dmy[0, 0] = 0
+        return self.icffta(dmy)
+
+    def momentumConservation(self, uk):
+        uk[:,0,0] = 0
+        return
+
 class SPM3D(SPM):
     def __init__(self, params):
         """Instantiate 3D SPM object"""
@@ -368,3 +424,17 @@ class SPM3D(SPM):
     
     def sloverRotation(self, omega, rotation):
         return np.cross(omega, rotation)
+
+    def makeRhoe(self, c, ze, phi_dmy):
+        dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
+        dmy = self.ffta(dmy); dmy[0, 0, 0] = 0
+        return self.iffta(dmy)
+
+    def makeRhoe_complex(self, c, ze, phi_dmy):
+        dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
+        dmy = self.cffta(dmy); dmy[0, 0, 0] = 0
+        return self.icffta(dmy)
+
+    def momentumConservation(self, uk):
+        uk[:,0,0,0] = 0
+        return

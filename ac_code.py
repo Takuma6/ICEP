@@ -27,7 +27,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     # 1 - solute concentration
     phi_s               =   sys.makePhi(phi_sine, position) 
     charge              =   np.array([solverC(ci, sys.ifftu(uk) , position, electricfield, gi, zi, phi_s) for ci,gi,zi in zip(charge, gamma, ze)])
-    rho_e               =   sys.makeRhoe(charge, ze, phi_s)
+    rho_e               =   sys.makeRhoe_complex(charge, ze, phi_s)
     
     # 2 - advection / diffusion
     uk                  =   fluidSolver(uk)
@@ -35,7 +35,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     position, rotation  =   posSolver(position, velocity, rotation, omega)
     phi                 =   sys.makePhi(phiFunc, position)
     phi_s               =   sys.makePhi(phi_sine, position) 
-    eps,deps            =   sys.makeDielectricField_tanh(em, position, rotation, phi_s)
+    eps,deps            =   sys.makeDielectricField_tanh_complex(em, position, rotation, phi_s, ac_freq)
     
     # 3 - electrostatic field
     # Ext. pot_ext are local variables
@@ -96,38 +96,35 @@ def solverParticleVel(velocity, omega, force, torque):
 def constantVelocity(velocity, omega, force, torque):
     return velocity, omega
 
-# electrodynamics
-def makeRhoe(c, ze, phi_dmy):
-    dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
-    dmy = sys.ffta(dmy); dmy[0, 0] = 0
-    return sys.iffta(dmy)
-
 def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
     nnsole  = sys.makeTanOp(phi_dmy)
-    chargek = sys.ffta(charge)            
-    A = sys.fftu(u*charge[None,...])
+    chargek = sys.cffta(charge)            
+    A = sys.cfftu(u*charge[None,...])
     #A = sys.fftu(np.einsum("ij..., j...->i...", nnsole,u*charge[None,...]))
-    B = sys.fftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.ifftu(1j*np.array(sys.grid.K)*chargek[None,...])))
-    C = sys.fftu(gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, -electric_field))
-    return sys.iffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K, (A-B-C)))
+    B = sys.cfftu(gamma*kbT*np.einsum("ij..., j...->i...", nnsole, sys.icfftu(1j*np.array(sys.grid.K_c)*chargek[None,...])))
+    C = sys.cfftu(gamma*ze*charge*np.einsum("ij..., j...->i...", nnsole, -electric_field))
+    return sys.icffta(chargek - dt*1j*np.einsum("i..., i...->...", sys.grid.K_c, (A-B-C)))
 
 def solverPoisson(eps, Ext, rho_e, deps):  
+    # tell how to calculate Ax
     def mvps(v):
         w = v.view()
         w.shape = eps.shape
-        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
+        dmy = sys.icfftu(1j*sys.grid.K_c*sys.grid.shiftK_c()*sys.cffta(w))
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
+        dmy = dmy.reshape(NN)
         return dmy
-    def rhs():
+    # build b
+    def rhs(eps, Ext):
         dmy = Ext.copy()
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
+        dmy = dmy.reshape(NN)
         return dmy
+    # error count
     class gmres_counter(object):
         def __init__(self, disp=True):
             self._disp = disp
@@ -138,23 +135,23 @@ def solverPoisson(eps, Ext, rho_e, deps):
                 print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
     
     NN            = np.prod(eps.shape)
-    A             = LinearOperator((NN,NN), matvec=mvps)
-    b             = rhs() - rho_e.reshape(NN)
+    A             = LinearOperator((NN,NN), matvec=mvps, dtype='complex128')
+    b             = rhs(eps, Ext) - rho_e.reshape(NN)
     counter       = gmres_counter()
-    pot, exitcode = sp.sparse.linalg.lgmres(A, b, tol=1e-5)#, callback=counter)
+    pot, exitcode = lgmres(A, b, tol=1e-5)#, callback=counter)
     pot.shape     = eps.shape
-    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
-
-    def bound_charge_solver(E_total, epsilon0):
+    E             = -sys.icfftu(1j*sys.grid.K_c*sys.grid.shiftK_c()*sys.cffta(pot)) 
+    
+    def _bound_charge_solver(E_total, epsilon0=1):
         dmy = E_total.copy()
         eps_minus_eps0 = eps - epsilon0
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
         return dmy
-    rho_b   = -bound_charge_solver(E+Ext, 1)
+    rho_b   = -_bound_charge_solver(E+Ext)
     
-    def _solve_maxwell_force(E_, deps_, free_charge):
+    def _solve_maxwell_force(_E, _deps, _free_charge):
         def _from_staggered_to_normal(vector):
             dmy = np.zeros_like(vector)
             for i in range(len(vector)):
@@ -165,35 +162,41 @@ def solverPoisson(eps, Ext, rho_e, deps):
             for i in range(dimention):
                 dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
             return dmy
-        dmy = _from_staggered_to_normal(E_)
-        E_2 = np.linalg.norm(dmy, axis=0)
-        dmy_stag = deps_.copy()
-        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
-        dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy = _from_staggered_to_normal(_E)
+        #E_2 = np.linalg.norm(dmy, axis=0)
+        E_2 = np.einsum('i...,i...->...', dmy, dmy)
+        dmy_stag  = _deps.copy()
+        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(_E))
+        dmy_stag += _from_normal_to_staggered(_free_charge, len(_E))*_E
         dmy_normal = _from_staggered_to_normal(dmy_stag)
         return dmy_stag, dmy_normal
-    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force((E+Ext).real, deps.real, rho_e.real)
     
-    E[...]  = sys.grid.xyzScalar(E)
+    E.real[...]  = sys.grid.xyzScalar(E.real)
+    E.imag[...]  = sys.grid.xyzScalar(E.imag)
+    
     return pot, E, rho_b, f_maxwell_normal
 
 def solverPoisson2(eps, Ext, rho_e, deps, potential_in):  
+    # tell how to calculate Ax
     def mvps(v):
         w = v.view()
         w.shape = eps.shape
-        dmy = sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(w))
+        dmy = sys.icfftu(1j*sys.grid.K_c*sys.grid.shiftK_c()*sys.cffta(w))
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
+        dmy = dmy.reshape(NN)
         return dmy
-    def rhs():
+    # build b
+    def rhs(eps, Ext):
         dmy = Ext.copy()
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps + np.roll(eps, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
-        dmy.shape = (NN)
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
+        dmy = dmy.reshape(NN)
         return dmy
+    # error count
     class gmres_counter(object):
         def __init__(self, disp=True):
             self._disp = disp
@@ -204,23 +207,23 @@ def solverPoisson2(eps, Ext, rho_e, deps, potential_in):
                 print('iter %3i\t error = %.3e / %.3e' % (self.niter, np.max(np.abs(mvps(rk)-b)), np.max(np.abs(A*rk -b))))
     
     NN            = np.prod(eps.shape)
-    A             = LinearOperator((NN,NN), matvec=mvps)
-    b             = rhs() - rho_e.reshape(NN)
+    A             = LinearOperator((NN,NN), matvec=mvps, dtype='complex128')
+    b             = rhs(eps, Ext) - rho_e.reshape(NN)
     counter       = gmres_counter()
-    pot, exitcode = sp.sparse.linalg.lgmres(A, b, x0=potential_in.reshape(NN), tol=1e-5)#, callback=counter)
+    pot, exitcode = lgmres(A, b, x0=potential_in.reshape(NN), tol=1e-5)#, callback=counter)
     pot.shape     = eps.shape
-    E             = -sys.ifftu(1j*sys.grid.K*sys.grid.shiftK()*sys.ffta(pot)) 
-
-    def bound_charge_solver(E_total, epsilon0):
+    E             = -sys.icfftu(1j*sys.grid.K_c*sys.grid.shiftK_c()*sys.cffta(pot)) 
+    
+    def _bound_charge_solver(E_total, epsilon0=1):
         dmy = E_total.copy()
         eps_minus_eps0 = eps - epsilon0
         for i in range(len(dmy)):
             dmy[i][...] *= 0.5*(eps_minus_eps0 + np.roll(eps_minus_eps0, -1, axis=i))
-        dmy = sys.iffta(np.sum(1j*sys.grid.K*np.conj(sys.grid.shiftK())*sys.fftu(dmy), axis=0))
+        dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
         return dmy
-    rho_b   = -bound_charge_solver(E+Ext, 1)
+    rho_b   = -_bound_charge_solver(E+Ext)
     
-    def _solve_maxwell_force(E_, deps_, free_charge):
+    def _solve_maxwell_force(_E, _deps, _free_charge):
         def _from_staggered_to_normal(vector):
             dmy = np.zeros_like(vector)
             for i in range(len(vector)):
@@ -231,33 +234,40 @@ def solverPoisson2(eps, Ext, rho_e, deps, potential_in):
             for i in range(dimention):
                 dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
             return dmy
-        dmy = _from_staggered_to_normal(E_)
-        E_2 = np.linalg.norm(dmy, axis=0)
-        dmy_stag = deps_.copy()
-        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
-        dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
+        dmy = _from_staggered_to_normal(_E)
+        #E_2 = np.linalg.norm(dmy, axis=0)
+        E_2 = np.einsum('i...,i...->...', dmy, dmy)
+        dmy_stag  = _deps.copy()
+        dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(_E))
+        dmy_stag += _from_normal_to_staggered(_free_charge, len(_E))*_E
         dmy_normal = _from_staggered_to_normal(dmy_stag)
         return dmy_stag, dmy_normal
-    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E+Ext, deps, rho_e)
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force((E+Ext).real, deps.real, rho_e.real)
     
-    E[...]  = sys.grid.xyzScalar(E)
+    E.real[...]  = sys.grid.xyzScalar(E.real)
+    E.imag[...]  = sys.grid.xyzScalar(E.imag)
+    
     return pot, E, rho_b, f_maxwell_normal
 
-def uniform_ElectricField_x(coef_E = .1):
-    Ext = np.zeros_like(sys.ifftu(uk)); Ext[0] = coef_E
-    potential_ext = np.array(np.max(sys.grid.X[0]) - sys.grid.X[0])*coef_E
+def uniform_ElectricField_x(time, coef_E = .1, frequency=1):
+    E_0  = coef_E*np.exp(-1j*frequency*time)
+    Ext  = np.zeros_like(sys.ifftu(uk)); Ext[0] = 1
+    Ext  = E_0*Ext
+    potential_ext = np.array(np.max(sys.grid.X[0]) - sys.grid.X[0])*E_0
     return Ext, potential_ext
 
-def uniform_ElectricField_y(coef_E = .1):
-    Ext = np.zeros_like(sys.ifftu(uk)); Ext[1] = coef_E
-    potential_ext = np.array(np.max(sys.grid.X[1]) - sys.grid.X[1])*coef_E
+def uniform_ElectricField_y(time, coef_E = .1, frequency=1):
+    E_0  = coef_E*np.exp(-1j*frequency*time)
+    Ext  = np.zeros_like(sys.ifftu(uk)); Ext[1] = 1
+    Ext  = E_0*Ext
+    potential_ext = np.array(np.max(sys.grid.X[1]) - sys.grid.X[1])*E_0
     return Ext, potential_ext
 
 setder = lambda i : "trajectory/frame_" + str(np.int(i))
 def saveh5(i, output, u, phi, position, rotation, velocity, omega, force, torque, \
            concentration, free_charge_density, bound_charge_density, electric_potential, electric_field, eps, f_maxwell, time):
     output.create_group(setder(i))
-    output.create_dataset(setder(i)+'/Time', data = time*i)
+    output.create_dataset(setder(i)+'/Time', data = time)
     output.create_dataset(setder(i)+'/u', data = u)
     output.create_dataset(setder(i)+'/phi', data = phi)
     output.create_dataset(setder(i)+'/epsilon', data = eps)
@@ -306,8 +316,10 @@ species  = 2
 epsilon0 = 1
 coef_E   = 0.5
 coef_n   = 0.1
+ac_freq  = 1
+time     = 0
 em       = {'epsilon':{'head':10, 'tail':0.1, 'fluid':1}, \
-			'sigma':{'head':0, 'tail':0, 'fluid':0}}
+			'sigma':{'head':20, 'tail':1, 'fluid':5}}
 
 # particle property
 R     = np.ones((1,dim))*sys.grid.length/2
@@ -320,19 +332,19 @@ O     = np.zeros(len(R)) #2d
 phi                =   sys.makePhi(phir, R)
 PKsole             =   sys.grid._solenoidalProjectorK()
 uk                 =   np.einsum('ij...,j...->i...', PKsole, sys.fftu(sys.makeUp(phir, R, V, O)))
-charge             =   coef_n*np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
+charge             =   coef_n*np.ones((species, sys.grid.ns[0], sys.grid.ns[1]), dtype='complex128') #2d
 #charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1], sys.grid.ns[2])) #3d
-rho_e              =   sys.makeRhoe(charge, ze, phi)
+rho_e              =   sys.makeRhoe_complex(charge, ze, phi)
 
-Ext, potential_ext    =   uniform_ElectricField_y(coef_E=coef_E)
+Ext, potential_ext    =   uniform_ElectricField_y(time, coef_E=coef_E, frequency=ac_freq)
 phi_s                 =   sys.makePhi(phi_sine, R) 
-eps, deps             =   sys.makeDielectricField_tanh(em, R, Q, phi_s)
+eps, deps             =   sys.makeDielectricField_tanh_complex(em, R, Q, phi_s, ac_freq)
 potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
-nframes = 100
-ngts    = 100
+nframes = 10
+ngts    = 10
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
 saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
@@ -342,7 +354,9 @@ for frame in range(nframes):
     for gts in range(ngts):
         phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b, f_maxwell, eps \
             = solver(phi, uk, R, Q, V, O, charge, E, potential, phir, solverNS, constantRotation, solverParticleVel, solverPoisson2)
-    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
+        time += dt
+        Ext, potential_ext  =  uniform_ElectricField_y(time, coef_E=coef_E, frequency=ac_freq)
+    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, eps, f_maxwell, time)
     outfh.flush()
 
 outfh.flush()
