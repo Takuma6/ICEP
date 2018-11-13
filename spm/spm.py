@@ -182,14 +182,14 @@ class SPM:
         r[:,np.logical_not(idx)] = 0
         return r
 
-    def _janus_tanh(self, p, R, N, sharpness=200):
+    def _janus_tanh(self, p, R, N, sharpness):
         avg,delta = (p['head'] + p['tail'])/2, (p['head'] - p['tail'])
         phi_sine  = (lambda x : utils.phiSine(x, self.particle.radius, self.particle.xi))
         dmy       = self.makePhi_janus(phi_sine, R, N)
         return avg, delta, avg + (delta/2)*np.tanh(sharpness*dmy)
 
     def makeDielectricField_tanh(self, electric_property, position, rotation, phi_, sharpness=200):
-        avg,delta,test = self._janus_tanh(electric_property['epsilon'], position, rotation)
+        avg,delta,test = self._janus_tanh(electric_property['epsilon'], position, rotation, sharpness)
         epsilon        = test*phi_+(1-phi_)*electric_property['epsilon']['fluid']
         d_epsilon      = self.ifftu(1j*self.grid.K*self.grid.shiftK()*self.ffta(epsilon))
         return epsilon, d_epsilon
@@ -198,7 +198,7 @@ class SPM:
     def _complex_permittivity(self, _epsilon, _sigma, _frequency): 
         return _epsilon -1j*_sigma/_frequency
 
-    def _janus_tanh_complex(self, p, R, N, frequency, sharpness=200):
+    def _janus_tanh_complex(self, p, R, N, frequency, sharpness):
         p_head    = self._complex_permittivity(p['epsilon']['head'], p['sigma']['head'], frequency)
         p_tail    = self._complex_permittivity(p['epsilon']['tail'], p['sigma']['tail'], frequency)
         avg,delta = (p_head + p_tail)/2, (p_head - p_tail)
@@ -207,7 +207,7 @@ class SPM:
         return avg, delta, avg + (delta/2)*np.tanh(sharpness*dmy)
 
     def makeDielectricField_tanh_complex(self, electric_property, position, rotation, phi_, frequency, sharpness=200):
-        avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency)
+        avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency, sharpness)
         p_fluid        = self._complex_permittivity(electric_property['epsilon']['fluid'], electric_property['sigma']['fluid'], frequency)
         epsilon        = test*phi_+(1-phi_)*p_fluid
         d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))

@@ -166,7 +166,7 @@ def solverPoisson(eps, Ext, rho_e, deps):
                 dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
             return dmy
         dmy = _from_staggered_to_normal(E_)
-        E_2 = np.linalg.norm(dmy, axis=0)
+        E_2 = np.einsum('i...,i...->...', dmy, dmy)
         dmy_stag = deps_.copy()
         dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
         dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_
@@ -232,7 +232,7 @@ def solverPoisson2(eps, Ext, rho_e, deps, potential_in):
                 dmy[i][...] = 0.5*(scalar + np.roll(scalar, -1, axis=i))
             return dmy
         dmy = _from_staggered_to_normal(E_)
-        E_2 = np.linalg.norm(dmy, axis=0)
+        E_2 = np.sum(dmy*dmy, axis=0)
         dmy_stag = deps_.copy()
         dmy_stag *= -0.5*_from_normal_to_staggered(E_2, len(E_))
         dmy_stag += _from_normal_to_staggered(free_charge, len(E_))*E_

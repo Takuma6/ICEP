@@ -316,10 +316,10 @@ species  = 2
 epsilon0 = 1
 coef_E   = 0.5
 coef_n   = 0.1
-ac_freq  = 1
+ac_freq  = 1e0
 time     = 0
-em       = {'epsilon':{'head':10, 'tail':0.1, 'fluid':1}, \
-			'sigma':{'head':20, 'tail':1, 'fluid':5}}
+em       = {'epsilon':{'head':2  , 'tail':2  , 'fluid':80}, \
+            'sigma'  :{'head':100, 'tail':0.1, 'fluid':1 }}
 
 # particle property
 R     = np.ones((1,dim))*sys.grid.length/2
@@ -343,8 +343,8 @@ potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
-nframes = 10
-ngts    = 10
+nframes = 100
+ngts    = 100
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
 saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
