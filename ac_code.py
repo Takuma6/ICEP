@@ -22,7 +22,7 @@ def reload():
 
 # main function
 def solver(phi, uk, position, rotation, velocity, omega, \
-                   charge, rho_e, electricfield, electric_potential, \
+                   charge, electricfield, electric_potential, \
                    phiFunc, fluidSolver, posSolver, velSolver, potentialSolver):
     # 1 - solute concentration
     phi_s               =   sys.makePhi(phi_sine, position) 
@@ -150,6 +150,7 @@ def solverPoisson(eps, Ext, rho_e, deps, potential_in):
         dmy = sys.icffta(np.sum(1j*sys.grid.K_c*np.conj(sys.grid.shiftK_c())*sys.cfftu(dmy), axis=0))
         return dmy
     dmy     = -_ohmic_free_charge(E_total, eps.imag)
+    rho_e  +=  dmy
     
     def _bound_charge_solver(E_total, epsilon0=1):
         dmy = E_total.copy()
@@ -179,7 +180,7 @@ def solverPoisson(eps, Ext, rho_e, deps, potential_in):
         dmy_stag += _from_normal_to_staggered(_free_charge, len(_E))*_E
         dmy_normal = _from_staggered_to_normal(dmy_stag)
         return dmy_stag, dmy_normal
-    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E_total.real, deps.real, (rho_e+dmy).real)
+    f_maxwell_staggered, f_maxwell_normal = _solve_maxwell_force(E_total.real, deps.real, rho_e.real)
     
     E.real[...]  = sys.grid.xyzScalar(E.real)
     E.imag[...]  = sys.grid.xyzScalar(E.imag)
@@ -260,11 +261,11 @@ kbT      = 1
 species  = 2
 epsilon0 = 1
 coef_E   = 0.5
-coef_n   = 5
+coef_n   = 1
 ac_freq  = 1e-1
 time     = 0
 em       = {'epsilon':{'head':.4e-1, 'tail':.4e-1, 'fluid':8e-1}, \
-            'sigma'  :{'head':10e-1, 'tail':.1e-3, 'fluid':1e-1}}
+            'sigma'  :{'head':10e-1, 'tail':.1e-1, 'fluid':1e-1}}
 
 # particle property
 R     = np.ones((1,dim))*sys.grid.length/2
@@ -287,23 +288,21 @@ eps, deps             =   sys.makeDielectricField_tanh_complex(em, R, Q, phi_s, 
 potential, E, rho_b, f_maxwell, rho_e  =   solverPoisson(eps, Ext, rho_e, deps, np.zeros_like(eps))
 E                    +=   Ext 
 potential            +=   potential_ext  
-rho_ohmic             =   ohmic_free_charge(E, eps.imag)   
 
 nframes = 10
 ngts    = 10
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e+rho_ohmic, rho_b, potential, E, eps, f_maxwell, dt*ngts)
+saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)
     for gts in range(ngts):
         phi, uk, R, Q, V, O, Fh, Nh, charge, potential, E, rho_e, rho_b, f_maxwell, eps \
-            = solver(phi, uk, R, Q, V, O, charge, rho_e, E, potential, phir, solverNS, constantRotation, solverParticleVel, solverPoisson)
+            = solver(phi, uk, R, Q, V, O, charge, E, potential, phir, solverNS, solverParticlePos, solverParticleVel, solverPoisson)
         time += dt
         Ext, potential_ext  =  uniform_ElectricField_y(time, coef_E=coef_E, frequency=ac_freq)
-    rho_ohmic = ohmic_free_charge(E, eps.imag)
-    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e+rho_ohmic, rho_b, potential, E, eps, f_maxwell, time)
+    saveh5(frame+1, outfh, sys.ifftu(uk), phi, R, Q, V, O, Fh, Nh, charge, rho_e, rho_b, potential, E, eps, f_maxwell, time)
     outfh.flush()
     print("R = ", R[0], flush=True)
 

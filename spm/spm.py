@@ -212,6 +212,21 @@ class SPM:
         epsilon        = test*phi_+(1-phi_)*p_fluid
         d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))
         return epsilon, d_epsilon
+
+    def makeDielectricField_tanh_complex2(self, electric_property, position, rotation, phi_, frequency, charge, ze=1, D=1, Phi_0=1, sharpness=200):
+        def _makeRhoe_complex_include_particle(c, ze):
+            dmy = functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
+            dmy = self.cffta(dmy); dmy[0, 0] = 0
+            return self.icffta(dmy)
+        free_charge_density = _makeRhoe_complex_include_particle(charge, np.array([ze,-ze])[...,None])
+        avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency, sharpness)
+        sigma_f        = 2*ze*np.abs(free_charge_density)*D/Phi_0
+        eps_f          = self._complex_permittivity(electric_property['epsilon']['fluid'], sigma_f, frequency)
+        ind_0          = np.logical_not(sigma_f > electric_property['sigma']['fluid'])
+        eps_f[ind_0]   = self._complex_permittivity(electric_property['epsilon']['fluid'], electric_property['sigma']['fluid'], frequency)
+        epsilon        = test*phi_+(1-phi_)*eps_f
+        d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))
+        return epsilon, d_epsilon
  
     # fft for variables have only real values
     def ffta(self, a):
