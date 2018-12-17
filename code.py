@@ -27,6 +27,7 @@ def solver(phi, uk, position, rotation, velocity, omega, \
     # 1 - solute concentration
     phi_s               =   sys.makePhi(phi_sine, position) 
     charge              =   np.array([solverC(ci, sys.ifftu(uk) , position, electricfield, gi, zi, phi_s) for ci,gi,zi in zip(charge, gamma, ze)])
+    charge              =   rescaleSolute(charge, phi, total_C0)
     rho_e               =   sys.makeRhoe(charge, ze, phi_s)
     
     # 2 - advection / diffusion
@@ -101,6 +102,16 @@ def makeRhoe(c, ze, phi_dmy):
     dmy = (1 - phi_dmy)*functools.reduce(lambda a, b: a + b, map(lambda zei,ci : zei*ci, ze, c))
     dmy = sys.ffta(dmy); dmy[0, 0] = 0
     return sys.iffta(dmy)
+
+def countSingleSolute(charge, phi):
+    dmy = (1-phi)*charge
+    return dmy.sum(-1).sum(-1).sum(-1)
+
+def rescaleSolute(charge, phi, total_C0):
+    for i in range(species):
+        rescale_factor = total_C0[i]/countSingleSolute(charge[i], phi)
+        charge[i] *= rescale_factor
+    return charge
 
 def solverC(charge, u, position, electric_field, gamma, ze, phi_dmy):
     nnsole  = sys.makeTanOp(phi_dmy)
@@ -321,6 +332,7 @@ phi                =   sys.makePhi(phir, R)
 PKsole             =   sys.grid._solenoidalProjectorK()
 uk                 =   np.einsum('ij...,j...->i...', PKsole, sys.fftu(sys.makeUp(phir, R, V, O)))
 charge             =   coef_n*np.ones((species, sys.grid.ns[0], sys.grid.ns[1])) #2d
+total_C0           =   np.array([countSingleSolute(charge[i], phi) for i in range(species)])
 #charge             =   np.ones((species, sys.grid.ns[0], sys.grid.ns[1], sys.grid.ns[2])) #3d
 rho_e              =   sys.makeRhoe(charge, ze, phi)
 
