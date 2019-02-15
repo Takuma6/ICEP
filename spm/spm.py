@@ -1,5 +1,6 @@
 import numpy as np
 import functools
+import os
 from . import utils
 
 class Fluid:
@@ -125,6 +126,31 @@ class SPM:
             phi(r) = \sum_i phi_i(r)"""
         return functools.reduce(lambda a, b: a + b, map(lambda Ri: phi(self._particleGridDistance(Ri)), R))
 
+    def makePhiWall(self, width_wall, axis='y'):
+        """Compute phi field for walls
+        
+        Args:
+            width_wall : int value of the width of walls
+        Returns:
+            phi_wall(r)"""
+        xi=self.particle.xi
+        if axis=='x':
+            index_wall = 0
+        elif axis=='y':
+            index_wall = 1
+        elif axis=='x':
+            index_wall = 2
+        else :
+            print('invalid wall axis', flush=True)
+            os._exit()
+        X           = np.array(self.grid.X[index_wall])
+        top_wall    = self.grid.length[index_wall] - width_wall*self.grid.dx
+        bottom_wall = width_wall*self.grid.dx
+        phir_wall   = (lambda x, width_wall, xi_wall : utils.phiSine(x, width_wall, xi_wall)) 
+        phi_top     = 1-phir_wall(X, top_wall,    xi)
+        phi_bottom  =   phir_wall(X, bottom_wall, xi)
+        return phi_top+phi_bottom
+
     def makePhi_janus(self, phi, R, N):
         """Compute phi field with janus parameter for given particle configuration
         
@@ -210,6 +236,18 @@ class SPM:
         avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency, sharpness)
         p_fluid        = self._complex_permittivity(electric_property['epsilon']['fluid'], electric_property['sigma']['fluid'], frequency)
         epsilon        = test*phi_+(1-phi_)*p_fluid
+        d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))
+        return epsilon, d_epsilon
+
+    def makeDielectricField_wall_tanh_complex(self, electric_property, position, rotation, _phi, _phi_wall, frequency, wall_prop='head', sharpness=200):
+        avg,delta,test = self._janus_tanh_complex(electric_property, position, rotation, frequency, sharpness)
+        p_fluid        = self._complex_permittivity(electric_property['epsilon']['fluid'], electric_property['sigma']['fluid'], frequency)
+        if wall_prop=='head' or wall_prop=='tail':
+            p_wall = self._complex_permittivity(electric_property['epsilon'][wall_prop], electric_property['sigma'][wall_prop], frequency)
+        else :
+            print('invalid wall property', flush=True)
+            os._exit
+        epsilon        = test*_phi + (1-_phi-_phi_wall)*p_fluid + p_wall*_phi_wall
         d_epsilon      = self.icfftu(1j*self.grid.K_c*self.grid.shiftK_c()*self.cffta(epsilon))
         return epsilon, d_epsilon
 
