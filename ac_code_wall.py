@@ -256,12 +256,12 @@ kbT        = 1
 species    = 2
 epsilon0   = 1
 coef_E     = 0.5
-coef_n     = 1
+coef_n     = .5
 ac_freq    = 1e-1
 width_wall = 6
 time       = 0
 em_factor  = 1e-1
-em         = {'epsilon':{'head':.4*em_factor, 'tail':.4*em_factor, 'fluid':8*em_factor}, \
+em         = {'epsilon':{'head':10*em_factor, 'tail':.4*em_factor, 'fluid':8*em_factor}, \
               'sigma'  :{'head':10*em_factor, 'tail':.1*em_factor, 'fluid':1*em_factor}}
 
 # particle property
@@ -291,7 +291,7 @@ nframes = 10
 ngts    = 10
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, phi_wall, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
+saveh5(0, outfh, sys.ifftu(uk), phi, phi_wall, R, Q, V, O, np.zeros_like(R), np.zeros_like(R), charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)

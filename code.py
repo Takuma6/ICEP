@@ -350,7 +350,7 @@ nframes = 100
 ngts    = 100
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
-saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, O, O, charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
+saveh5(0, outfh, sys.ifftu(uk), phi, R, Q, V, O, np.zeros_like(R), np.zeros_like(R), charge, rho_e, rho_b, potential, E, eps, f_maxwell, dt*ngts)
 
 for frame in range(nframes):
     print("now at loop:",frame, flush=True)
