@@ -346,7 +346,7 @@ potential, E, rho_b, f_maxwell   =   solverPoisson(eps, Ext, rho_e, deps)
 E                    +=   Ext 
 potential            +=   potential_ext     
 
-nframes = 100
+nframes = 10
 ngts    = 100
 output_file = "output.hdf5"
 outfh       = h5py.File(output_file, 'w')
